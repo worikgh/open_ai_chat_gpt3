@@ -4,7 +4,25 @@ use std::io::Write;
 use std::fs::OpenOptions;
 
 use reqwest::blocking::ClientBuilder;
+use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
+use clap::Parser;
+
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Arguments{
+    /// The model to use
+    #[arg(long,)]
+    model: Option<String>,
+
+    /// Maximum tokens to return
+    #[arg(long, default_value_t = 2_000)]
+    max_tokens: u32,
+
+    /// The secret key
+    #[arg(long,)]
+    api_key:Option<String>,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct RequestInfo {
@@ -20,11 +38,11 @@ struct RequestInfo {
     #[serde(skip_deserializing)]
     temperature: f32,
     #[serde(skip_deserializing)]
-    max_tokens: i32,
+    max_tokens: u32,
 }
 
 impl RequestInfo {
-    fn new(prompt: String, model: String, temperature: f32, max_tokens: i32) -> Self {
+    fn new(prompt: String, model: String, temperature: f32, max_tokens: u32) -> Self {
         Self {
 	    choices: Vec::new(),
 	    id: String::new(),
@@ -70,35 +88,53 @@ fn justify_string(s: &str) -> String {
 
 
 fn main() {
+
+    // Get the command line options
+    let cmd_line_opts = Arguments::parse();
+
     let mut options = OpenOptions::new();
-    let mut file = options.write(true).append(true).create(true).open("reply.txt").unwrap();
-    let api_key = "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";
+    let mut history_file = options.write(true).append(true).create(true).open("reply.txt").unwrap();
+
+    let api_key = match cmd_line_opts.api_key.as_deref(){
+	Some(key) => key,
+	None => panic!("Supply a key"),
+    };
+    let binding = "text-davinci-003".to_string();
+    let model = match cmd_line_opts.model.as_deref() {
+	Some(model) => model,
+	None => &binding,
+    };
+    let tokens = cmd_line_opts.max_tokens;
 
     let prompt:String  = "Hello.  Are you ready to answer questions?".to_string();
-    let model = "text-davinci-003";
     let temperature = 0.9;
-    let tokens = 2_500;
     let mut request_info = RequestInfo::new(prompt.to_string(), model.to_string(), temperature, tokens);
     let client = ClientBuilder::new().timeout(std::time::Duration::from_secs(60)).build().unwrap();
     let mut json: RequestInfo;
     loop {
-	let response = client
+	let response = match client
             .post("https://api.openai.com/v1/completions")
             .header("Content-Type", "application/json")
             .header("Authorization", format!("Bearer {api_key}"))
             .json(&request_info)
-            .send()
-            .unwrap();
-	json = response.json().unwrap();
+            .send() {
+		Ok(response) => response,
+		Err(err) => panic!("{err}"),
+	    };
+	match response.status() {
+	    StatusCode::OK => println!("success!"),
+	    s => panic!("Received response status: {:?}.  {:?}", s, response),
+	};	
+	json =  response.json().unwrap();
 	if json.choices[0].text.is_empty() {
 	    break;
 	}
-	file.write(&json.choices[0].text.as_bytes()).unwrap();
-	// println!("json:>{:?}",json);
+	history_file.write(&json.choices[0].text.as_bytes()).unwrap();
+
 	for s in json.choices[0].text.as_str().split_terminator('\n'){
 	    println!("{}", justify_string(s));
 	}
-	// println!("json.choices[0].finish_reason:.{:?}", json.choices[0].finish_reason);
+
 	let mut input = String::new();
 	io::stdin().read_line(&mut input).unwrap();
 	request_info.prompt = format!("{input}");
