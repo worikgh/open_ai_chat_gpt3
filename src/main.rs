@@ -1,7 +1,9 @@
 #![allow(dead_code)]
-use std::io;
+// use std::io;
 use std::io::Write;
 use std::fs::OpenOptions;
+use std::env;
+use rustyline;//::{Editor};
 
 use reqwest::blocking::ClientBuilder;
 use reqwest::StatusCode;
@@ -95,9 +97,14 @@ fn main() {
     let mut options = OpenOptions::new();
     let mut history_file = options.write(true).append(true).create(true).open("reply.txt").unwrap();
 
+    let binding: String;
     let api_key = match cmd_line_opts.api_key.as_deref(){
 	Some(key) => key,
-	None => panic!("Supply a key"),
+	None => {
+	    binding = env::var("OPENAI_API_KEY").unwrap();
+	    binding.as_str()
+	},
+	    
     };
     let binding = "text-davinci-003".to_string();
     let model = match cmd_line_opts.model.as_deref() {
@@ -105,6 +112,10 @@ fn main() {
 	None => &binding,
     };
     let tokens = cmd_line_opts.max_tokens;
+
+    // Set up readline/rustyline
+    // https://github.com/kkawakam/rustyline
+    let mut rl = rustyline::Editor::<()>::new().unwrap();
 
     let prompt:String  = "Hello.  Are you ready to answer questions?".to_string();
     let temperature = 0.9;
@@ -134,9 +145,15 @@ fn main() {
 	for s in json.choices[0].text.as_str().split_terminator('\n'){
 	    println!("{}", justify_string(s));
 	}
+	let readline = rl.readline(">> ");
+	let input = match readline {
+	    Ok(line) => line,
+	    Err(_) => {
+		println!("No input");
+		"".to_string()
+	    },
+	};
 
-	let mut input = String::new();
-	io::stdin().read_line(&mut input).unwrap();
 	request_info.prompt = format!("{input}");
 	println!("You entered: {}", input);
     }
