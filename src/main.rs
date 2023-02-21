@@ -1,20 +1,21 @@
 #![allow(dead_code)]
 // use std::io;
-use std::io::Write;
-use std::fs::OpenOptions;
+use rustyline;
 use std::env;
-use rustyline;//::{Editor};
+use std::fs::OpenOptions;
+use std::io::Write; //::{Editor};
 
+use clap::Parser;
 use reqwest::blocking::ClientBuilder;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
-use clap::Parser;
+use std::fs::File;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
-struct Arguments{
+struct Arguments {
     /// The model to use
-    #[arg(long,)]
+    #[arg(long)]
     model: Option<String>,
 
     /// Maximum tokens to return
@@ -22,8 +23,8 @@ struct Arguments{
     max_tokens: u32,
 
     /// The secret key
-    #[arg(long,)]
-    api_key:Option<String>,
+    #[arg(long)]
+    api_key: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -46,9 +47,9 @@ struct RequestInfo {
 impl RequestInfo {
     fn new(prompt: String, model: String, temperature: f32, max_tokens: u32) -> Self {
         Self {
-	    choices: Vec::new(),
-	    id: String::new(),
-	    object: String::new(),
+            choices: Vec::new(),
+            id: String::new(),
+            object: String::new(),
             prompt,
             model,
             temperature,
@@ -57,7 +58,7 @@ impl RequestInfo {
     }
 }
 
-#[derive(Debug,  Deserialize)]
+#[derive(Debug, Deserialize)]
 struct Choice {
     text: String,
     logprobs: Option<Vec<f32>>,
@@ -88,28 +89,30 @@ fn justify_string(s: &str) -> String {
     result
 }
 
-
 fn main() {
-
     // Get the command line options
     let cmd_line_opts = Arguments::parse();
 
     let mut options = OpenOptions::new();
-    let mut history_file = options.write(true).append(true).create(true).open("reply.txt").unwrap();
+    let mut history_file: File = options
+        .write(true)
+        .append(true)
+        .create(true)
+        .open("reply.txt")
+        .unwrap();
 
     let binding: String;
-    let api_key = match cmd_line_opts.api_key.as_deref(){
-	Some(key) => key,
-	None => {
-	    binding = env::var("OPENAI_API_KEY").unwrap();
-	    binding.as_str()
-	},
-	    
+    let api_key = match cmd_line_opts.api_key.as_deref() {
+        Some(key) => key,
+        None => {
+            binding = env::var("OPENAI_API_KEY").unwrap();
+            binding.as_str()
+        }
     };
     let binding = "text-davinci-003".to_string();
     let model = match cmd_line_opts.model.as_deref() {
-	Some(model) => model,
-	None => &binding,
+        Some(model) => model,
+        None => &binding,
     };
     let tokens = cmd_line_opts.max_tokens;
 
@@ -117,45 +120,62 @@ fn main() {
     // https://github.com/kkawakam/rustyline
     let mut rl = rustyline::Editor::<()>::new().unwrap();
 
-    let prompt:String  = "Hello.  Are you ready to answer questions?".to_string();
+    let prompt: String = "Hello.  Are you ready to answer questions?".to_string();
     let temperature = 0.9;
-    let mut request_info = RequestInfo::new(prompt.to_string(), model.to_string(), temperature, tokens);
-    let client = ClientBuilder::new().timeout(std::time::Duration::from_secs(60)).build().unwrap();
+    let mut request_info =
+        RequestInfo::new(prompt.to_string(), model.to_string(), temperature, tokens);
+    let client = ClientBuilder::new()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .unwrap();
     let mut json: RequestInfo;
     loop {
-	let response = match client
+        _ = history_file
+            .write(format!("Q: {}\n", request_info.prompt).as_bytes())
+            .unwrap();
+        let response = match client
             .post("https://api.openai.com/v1/completions")
             .header("Content-Type", "application/json")
             .header("Authorization", format!("Bearer {api_key}"))
             .json(&request_info)
-            .send() {
-		Ok(response) => response,
-		Err(err) => panic!("{err}"),
-	    };
-	match response.status() {
-	    StatusCode::OK => println!("success!"),
-	    s => panic!("Received response status: {:?}.  {:?}", s, response),
-	};	
-	json =  response.json().unwrap();
-	if json.choices[0].text.is_empty() {
-	    break;
-	}
-	history_file.write(&json.choices[0].text.as_bytes()).unwrap();
+            .send()
+        {
+            Ok(response) => response,
+            Err(err) => panic!("{err}"),
+        };
+        match response.status() {
+            StatusCode::OK => println!("success!"),
+            s => {
+                panic!(
+                    "Failed: Status: {}. Response.path({})",
+                    s.canonical_reason().unwrap_or("Unknown Reason"),
+                    response.url().path(),
+                );
+            }
+        };
+        json = response.json().unwrap();
+        if json.choices[0].text.is_empty() {
+            break;
+        }
 
-	for s in json.choices[0].text.as_str().split_terminator('\n'){
-	    println!("{}", justify_string(s));
-	}
-	let readline = rl.readline(">> ");
-	let input = match readline {
-	    Ok(line) => line,
-	    Err(_) => {
-		println!("No input");
-		"".to_string()
-	    },
-	};
+        _ = history_file
+            .write(format!("A: {}\n", json.choices[0].text.trim_start()).as_bytes())
+            .unwrap();
 
-	request_info.prompt = format!("{input}");
-	println!("You entered: {}", input);
+        for s in json.choices[0].text.as_str().split_terminator('\n') {
+            println!("{}", justify_string(s));
+        }
+        let readline = rl.readline(">> ");
+        let input = match readline {
+            Ok(line) => line,
+            Err(_) => {
+                println!("No input");
+                "".to_string()
+            }
+        };
+
+        request_info.prompt = format!("{input}");
+        println!("You entered: {}", input);
     }
     if !json.choices.is_empty() {
         request_info.prompt = json.choices[0].text.clone();
