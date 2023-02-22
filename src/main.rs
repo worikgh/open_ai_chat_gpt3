@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 // use std::io;
-use rustyline;
+use rustyline::{Cmd, Event, EventHandler, KeyEvent};
 use std::env;
 use std::fs::OpenOptions;
 use std::io::Write; //::{Editor};
@@ -120,6 +120,14 @@ fn main() {
     // https://github.com/kkawakam/rustyline
     let mut rl = rustyline::Editor::<()>::new().unwrap();
 
+    // Set control keys to control append
+    rl.bind_sequence(
+        Event::KeySeq(vec![KeyEvent::ctrl('q')]),
+        EventHandler::Simple(Cmd::Interrupt),
+    );
+
+    let mut quit: bool = false;
+
     let prompt: String = "Hello.  Are you ready to answer questions?".to_string();
     let temperature = 0.9;
     let mut request_info =
@@ -129,6 +137,7 @@ fn main() {
         .build()
         .unwrap();
     let mut json: RequestInfo;
+
     loop {
         _ = history_file
             .write(format!("Q: {}\n", request_info.prompt).as_bytes())
@@ -169,13 +178,16 @@ fn main() {
         let input = match readline {
             Ok(line) => line,
             Err(_) => {
-                println!("No input");
+                quit = true;
                 "".to_string()
             }
         };
 
-        request_info.prompt = format!("{input}");
+        if quit {
+            break;
+        }
         println!("You entered: {}", input);
+        request_info.prompt = input;
     }
     if !json.choices.is_empty() {
         request_info.prompt = json.choices[0].text.clone();
