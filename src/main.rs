@@ -1,15 +1,62 @@
 #![allow(dead_code)]
 // use std::io;
-use rustyline::{Cmd, Event, EventHandler, KeyEvent};
-use std::env;
-use std::fs::OpenOptions;
-use std::io::Write; //::{Editor};
 
 use clap::Parser;
 use reqwest::blocking::ClientBuilder;
 use reqwest::StatusCode;
+use rustyline::completion::FilenameCompleter;
+use rustyline::highlight::{Highlighter, MatchingBracketHighlighter};
+use rustyline::hint::HistoryHinter;
+use rustyline::validate::MatchingBracketValidator;
+use rustyline::Validator;
+use rustyline::{Cmd, CompletionType, Config, EditMode, Editor, Event, EventHandler, KeyEvent};
+use rustyline::{Completer, Helper, Hinter};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow::{self, Borrowed, Owned};
+use std::env;
 use std::fs::File;
+use std::fs::OpenOptions;
+use std::io::Write; //::{Editor};
+
+/// `MyHelper` is copied from the examples in `RustyLine` crate
+#[derive(Helper, Completer, Hinter, Validator)]
+struct MyHelper {
+    #[rustyline(Completer)]
+    completer: FilenameCompleter,
+    highlighter: MatchingBracketHighlighter,
+    #[rustyline(Validator)]
+    validator: MatchingBracketValidator,
+    #[rustyline(Hinter)]
+    hinter: HistoryHinter,
+    colored_prompt: String,
+}
+
+/// `MyHelper` is copied from the examples in `RustyLine` crate
+impl Highlighter for MyHelper {
+    fn highlight_prompt<'b, 's: 'b, 'p: 'b>(
+        &'s self,
+        prompt: &'p str,
+        default: bool,
+    ) -> Cow<'b, str> {
+        if default {
+            Borrowed(&self.colored_prompt)
+        } else {
+            Borrowed(prompt)
+        }
+    }
+
+    fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {
+        Owned("\x1b[1m".to_owned() + hint + "\x1b[m")
+    }
+
+    fn highlight<'l>(&self, line: &'l str, pos: usize) -> Cow<'l, str> {
+        self.highlighter.highlight(line, pos)
+    }
+
+    fn highlight_char(&self, line: &str, pos: usize) -> bool {
+        self.highlighter.highlight_char(line, pos)
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -21,6 +68,10 @@ struct Arguments {
     /// Maximum tokens to return
     #[arg(long, default_value_t = 2_000)]
     max_tokens: u32,
+
+    /// Temperature for the model.
+    #[arg(long, default_value_t = 0.9)]
+    temperature: f32,
 
     /// The secret key
     #[arg(long)]
@@ -89,12 +140,12 @@ fn justify_string(s: &str) -> String {
     result
 }
 
-fn main() {
+fn main() -> rustyline::Result<()> {
     // Get the command line options
+    let default_model = "text-davinci-003".to_string();
     let cmd_line_opts = Arguments::parse();
-
     let mut options = OpenOptions::new();
-    let mut history_file: File = options
+    let mut conversation_record_file: File = options
         .write(true)
         .append(true)
         .create(true)
@@ -109,37 +160,60 @@ fn main() {
             binding.as_str()
         }
     };
-    let binding = "text-davinci-003".to_string();
     let model = match cmd_line_opts.model.as_deref() {
         Some(model) => model,
-        None => &binding,
+        None => &default_model,
     };
-    let tokens = cmd_line_opts.max_tokens;
+    let tokens: u32 = cmd_line_opts.max_tokens;
+    let temperature: f32 = cmd_line_opts.temperature;
 
-    // Set up readline/rustyline
+    // Set up readline/rustyline.  Copied from Rustyline examples
     // https://github.com/kkawakam/rustyline
-    let mut rl = rustyline::Editor::<()>::new().unwrap();
+    env_logger::init();
+    let config = Config::builder()
+        .history_ignore_space(true)
+        .completion_type(CompletionType::List)
+        .edit_mode(EditMode::Emacs)
+        .build();
+    let h = MyHelper {
+        completer: FilenameCompleter::new(),
+        highlighter: MatchingBracketHighlighter::new(),
+        hinter: HistoryHinter {},
+        colored_prompt: "".to_owned(),
+        validator: MatchingBracketValidator::new(),
+    };
+    let mut rl = Editor::with_config(config)?;
+    rl.set_helper(Some(h));
+    rl.bind_sequence(KeyEvent::alt('n'), Cmd::HistorySearchForward);
+    rl.bind_sequence(KeyEvent::alt('p'), Cmd::HistorySearchBackward);
+    if rl.load_history("history.txt").is_err() {
+        println!("No previous history.");
+    }
 
-    // Set control keys to control append
+    // Set control key C-q to quit.  Not really needed.  C-c does this
+    // auto-magically
     rl.bind_sequence(
         Event::KeySeq(vec![KeyEvent::ctrl('q')]),
         EventHandler::Simple(Cmd::Interrupt),
     );
 
+    // Set this to true to exit the min loop
     let mut quit: bool = false;
 
-    let prompt: String = "Hello.  Are you ready to answer questions?".to_string();
-    let temperature = 0.9;
-    let mut request_info =
-        RequestInfo::new(prompt.to_string(), model.to_string(), temperature, tokens);
+    // The initialisation prompt, passed to the OpenAI chat-bot
+    let initial_prompt: String = "Hello.  Are you ready to answer questions?".to_string();
+    let mut request_info = RequestInfo::new(initial_prompt, model.to_string(), temperature, tokens);
+
+    // The API client. `reqwest`
     let client = ClientBuilder::new()
         .timeout(std::time::Duration::from_secs(60))
         .build()
         .unwrap();
     let mut json: RequestInfo;
 
+    let mut count = 1;
     loop {
-        _ = history_file
+        _ = conversation_record_file
             .write(format!("Q: {}\n", request_info.prompt).as_bytes())
             .unwrap();
         let response = match client
@@ -167,7 +241,7 @@ fn main() {
             break;
         }
 
-        _ = history_file
+        _ = conversation_record_file
             .write(format!("A: {}\n", json.choices[0].text.trim_start()).as_bytes())
             .unwrap();
 
@@ -175,8 +249,12 @@ fn main() {
             println!("{}", justify_string(s));
         }
         let mut input: String;
+
+        // Loop around reading the input.
         loop {
-            let readline = rl.readline(">> ");
+            let p = format!("{count}> ");
+            rl.helper_mut().expect("No helper").colored_prompt = format!("\x1b[1;32m{p}\x1b[0m");
+            let readline = rl.readline(&p);
             input = match readline {
                 Ok(line) => line,
                 Err(_) => {
@@ -184,11 +262,21 @@ fn main() {
                     "".to_string()
                 }
             };
+            count += 1;
 
-            // Check if the input is an instruction.  If the first character is a '>'
+            // Check if the input is an instruction.  If the first
+            // character is a '>'...
             if input.starts_with('>') {
                 let (_, command) = input.split_at(1);
                 println!("meta: {command}");
+                // Handle commands here
+                match command {
+                    "foo" => println!("bar"),
+                    "bar" => println!("baz"),
+                    "baz" => println!("Who the fuck are you?"),
+                    "Another string, !" => println!("bar"),
+                    _ => (),
+                };
                 continue;
             }
             break;
@@ -196,10 +284,13 @@ fn main() {
         if quit {
             break;
         }
+        rl.add_history_entry(input.as_str())?;
         println!("You entered: {}", input);
         request_info.prompt = input;
     }
     if !json.choices.is_empty() {
         request_info.prompt = json.choices[0].text.clone();
     }
+    rl.append_history("history.txt")
+    // Ok(())
 }
