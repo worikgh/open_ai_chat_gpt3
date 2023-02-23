@@ -174,15 +174,25 @@ fn main() {
         for s in json.choices[0].text.as_str().split_terminator('\n') {
             println!("{}", justify_string(s));
         }
-        let readline = rl.readline(">> ");
-        let input = match readline {
-            Ok(line) => line,
-            Err(_) => {
-                quit = true;
-                "".to_string()
-            }
-        };
+        let mut input: String;
+        loop {
+            let readline = rl.readline(">> ");
+            input = match readline {
+                Ok(line) => line,
+                Err(_) => {
+                    quit = true;
+                    "".to_string()
+                }
+            };
 
+            // Check if the input is an instruction.  If the first character is a '>'
+            if input.starts_with('>') {
+                let (_, command) = input.split_at(1);
+                println!("meta: {command}");
+                continue;
+            }
+            break;
+        }
         if quit {
             break;
         }
