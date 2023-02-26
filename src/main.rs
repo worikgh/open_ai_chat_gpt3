@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 // use std::io;
-
+// TODO:  Make time out a parameter.  Report time out in "> p".
 use clap::Parser;
 use reqwest::blocking::ClientBuilder;
 use reqwest::StatusCode;
@@ -17,7 +17,7 @@ use std::env;
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::Write; //::{Editor};
-
+mod get_models;
 /// `MyHelper` is copied from the examples in `RustyLine` crate
 #[derive(Helper, Completer, Hinter, Validator)]
 struct MyHelper {
@@ -76,26 +76,30 @@ struct Arguments {
     /// The secret key
     #[arg(long)]
     api_key: Option<String>,
+
+    #[arg(long)]
+    start_prompt: Option<String>,
 }
 
+/// Response for a completions request.  See
+/// https://platform.openai.com/docs/api-reference/completions/create
 #[derive(Debug, Serialize, Deserialize)]
-struct RequestInfo {
-    #[serde(skip_serializing)]
-    choices: Vec<Choice>,
+struct CompletionRequestInfo {
     #[serde(skip_serializing)]
     id: String,
+    #[serde(skip_serializing)]
+    object: String,
+    #[serde(skip_serializing)]
+    choices: Vec<Choice>,
     #[serde(skip_deserializing)]
     prompt: String,
     model: String,
-    #[serde(skip_serializing)]
-    object: String,
     #[serde(skip_deserializing)]
     temperature: f32,
     #[serde(skip_deserializing)]
     max_tokens: u32,
 }
-
-impl RequestInfo {
+impl CompletionRequestInfo {
     fn new(prompt: String, model: String, temperature: f32, max_tokens: u32) -> Self {
         Self {
             choices: Vec::new(),
@@ -107,6 +111,30 @@ impl RequestInfo {
             max_tokens,
         }
     }
+}
+
+/// Response for a "models" query
+// {
+//   "data": [
+//     {
+//       "id": "model-id-0",
+//       "object": "model",
+//       "owned_by": "organization-owner",
+//       "permission": [...]
+//     },
+//     :
+//     :
+//     :
+//   ],
+//   "object": "list"
+// }
+#[derive(Debug, Serialize, Deserialize)]
+struct ModelData {
+    id: String,
+}
+#[derive(Debug, Serialize, Deserialize)]
+struct ModelRequestInfo {
+    data: Vec<ModelData>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -152,14 +180,22 @@ fn main() -> rustyline::Result<()> {
         .open("reply.txt")
         .unwrap();
 
-    let binding: String;
+    let _key_binding: String;
     let api_key = match cmd_line_opts.api_key.as_deref() {
         Some(key) => key,
         None => {
-            binding = env::var("OPENAI_API_KEY").unwrap();
-            binding.as_str()
+            _key_binding = env::var("OPENAI_API_KEY").unwrap();
+            _key_binding.as_str()
         }
     };
+
+    // The initialisation prompt, passed to the OpenAI chat-bot
+    let _prompt_binding: String;
+    let initial_prompt = cmd_line_opts
+        .start_prompt
+        .as_deref()
+        .unwrap_or("Hello.  Are you ready to answer questions?");
+
     let model = match cmd_line_opts.model.as_deref() {
         Some(model) => model,
         None => &default_model,
@@ -200,16 +236,19 @@ fn main() -> rustyline::Result<()> {
     // Set this to true to exit the min loop
     let mut quit: bool = false;
 
-    // The initialisation prompt, passed to the OpenAI chat-bot
-    let initial_prompt: String = "Hello.  Are you ready to answer questions?".to_string();
-    let mut request_info = RequestInfo::new(initial_prompt, model.to_string(), temperature, tokens);
+    let mut request_info = CompletionRequestInfo::new(
+        initial_prompt.to_string(),
+        model.to_string(),
+        temperature,
+        tokens,
+    );
 
     // The API client. `reqwest`
     let client = ClientBuilder::new()
-        .timeout(std::time::Duration::from_secs(60))
+        .timeout(std::time::Duration::from_secs(120))
         .build()
         .unwrap();
-    let mut json: RequestInfo;
+    let mut json: CompletionRequestInfo;
 
     let mut count = 1;
     loop {
@@ -266,17 +305,52 @@ fn main() -> rustyline::Result<()> {
 
             // Check if the input is an instruction.  If the first
             // character is a '>'...
-            if input.starts_with('>') {
-                let (_, command) = input.split_at(1);
-                println!("meta: {command}");
-                // Handle commands here
-                match command {
-                    "foo" => println!("bar"),
-                    "bar" => println!("baz"),
-                    "baz" => println!("Who the fuck are you?"),
-                    "Another string, !" => println!("bar"),
-                    _ => (),
-                };
+            if input.starts_with("> ") {
+                let mut meta = input.split_whitespace();
+                // The first word is: ">"
+                // The rest of the words are commands for the programme to interpret.
+                if let Some(cmd) = meta.nth(1) {
+                    // Handle commands here
+                    match cmd {
+                        "p" => {
+                            // Display the parameters
+                            println!("Temperature: {temperature}");
+                            println!("Model: {model}");
+                            println!("Tokens: {tokens}")
+                        }
+                        "md" => {
+                            // Display known models
+                            let response: reqwest::blocking::Response = match client
+                                .post("https://api.openai.com/v1/models")
+                                .header("Content-Type", "application/json")
+                                .header("Authorization", format!("Bearer {api_key}"))
+                                .send()
+                            {
+                                Ok(response) => response,
+                                Err(err) => panic!("{err}"),
+                            };
+                            match response.status() {
+                                StatusCode::OK => println!("success!"),
+                                s => {
+                                    panic!(
+                                        "Failed: Status: {}. Response.path({})",
+                                        s.canonical_reason().unwrap_or("Unknown Reason"),
+                                        response.url().path(),
+                                    );
+                                }
+                            };
+                            println!("{:?}", &response);
+                            json = response.json().unwrap();
+
+                            // let model_json: String = response.json().unwrap();
+                            // println!("{model_json}");
+                            // curl https://api.openai.com/v1/models \
+                            //   -H 'Authorization: Bearer YOUR_API_KEY'
+                        }
+
+                        _ => (),
+                    };
+                }
                 continue;
             }
             break;
