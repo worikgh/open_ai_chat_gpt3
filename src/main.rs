@@ -18,6 +18,9 @@ use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::Write; //::{Editor};
 mod get_models;
+mod model_example_data;
+#[cfg(test)]
+use model_example_data::ModelExampleData;
 /// `MyHelper` is copied from the examples in `RustyLine` crate
 #[derive(Helper, Completer, Hinter, Validator)]
 struct MyHelper {
