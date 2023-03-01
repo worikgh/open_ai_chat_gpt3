@@ -5,7 +5,7 @@ pub struct ModelExampleData {
 impl ModelExampleData {
     pub fn new() -> ModelExampleData {
         ModelExampleData {
-            json: " \"object\": \"list\",
+            json: "{\"object\": \"list\",
   \"data\": [
     {
       \"id\": \"babbage\",
